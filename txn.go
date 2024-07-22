@@ -518,7 +518,7 @@ func (txn *Txn) Discard() {
 	}
 }
 
-func (txn *Txn) commitAndSend() (func() error, error) {
+func (txn *Txn) commitAndSend() (func() error, uint64, error) {
 	orc := txn.db.orc
 	// Ensure that the order in which we get the commit timestamp is the same as
 	// the order in which we push these updates to the write channel. So, we
@@ -529,7 +529,7 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 
 	commitTs, conflict := orc.newCommitTs(txn)
 	if conflict {
-		return nil, ErrConflict
+		return nil, 0, ErrConflict
 	}
 
 	keepTogether := true
@@ -593,7 +593,7 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 	req, err := txn.db.sendToWriteCh(entries)
 	if err != nil {
 		orc.doneCommit(commitTs)
-		return nil, err
+		return nil, 0, err
 	}
 	ret := func() error {
 		err := req.Wait()
@@ -603,7 +603,7 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 		orc.doneCommit(commitTs)
 		return err
 	}
-	return ret, nil
+	return ret, commitTs, nil
 }
 
 func (txn *Txn) commitPrecheck() error {
@@ -628,6 +628,32 @@ func (txn *Txn) commitPrecheck() error {
 	return nil
 }
 
+// Returns 0 timestamp when read-only
+func (txn *Txn) CommitWithTs() (uint64, error) {
+	// txn.conflictKeys can be zero if conflict detection is turned off. So we
+	// should check txn.pendingWrites.
+	if len(txn.pendingWrites) == 0 {
+		// Discard the transaction so that the read is marked done.
+		txn.Discard()
+		return 0, nil
+	}
+	// Precheck before discarding txn.
+	if err := txn.commitPrecheck(); err != nil {
+		return 0, err
+	}
+	defer txn.Discard()
+
+	txnCb, commitTs, err := txn.commitAndSend()
+	if err != nil {
+		return 0, err
+	}
+	// If batchSet failed, LSM would not have been updated. So, no need to rollback anything.
+
+	// TODO: What if some of the txns successfully make it to value log, but others fail.
+	// Nothing gets updated to LSM, until a restart happens.
+	return commitTs, txnCb()
+}
+
 // Commit commits the transaction, following these steps:
 //
 // 1. If there are no writes, return immediately.
@@ -647,28 +673,8 @@ func (txn *Txn) commitPrecheck() error {
 // If error is nil, the transaction is successfully committed. In case of a non-nil error, the LSM
 // tree won't be updated, so there's no need for any rollback.
 func (txn *Txn) Commit() error {
-	// txn.conflictKeys can be zero if conflict detection is turned off. So we
-	// should check txn.pendingWrites.
-	if len(txn.pendingWrites) == 0 {
-		// Discard the transaction so that the read is marked done.
-		txn.Discard()
-		return nil
-	}
-	// Precheck before discarding txn.
-	if err := txn.commitPrecheck(); err != nil {
-		return err
-	}
-	defer txn.Discard()
-
-	txnCb, err := txn.commitAndSend()
-	if err != nil {
-		return err
-	}
-	// If batchSet failed, LSM would not have been updated. So, no need to rollback anything.
-
-	// TODO: What if some of the txns successfully make it to value log, but others fail.
-	// Nothing gets updated to LSM, until a restart happens.
-	return txnCb()
+	_, err := txn.CommitWithTs()
+	return err
 }
 
 type txnCb struct {
@@ -720,7 +726,7 @@ func (txn *Txn) CommitWith(cb func(error)) {
 
 	defer txn.Discard()
 
-	commitCb, err := txn.commitAndSend()
+	commitCb, _, err := txn.commitAndSend()
 	if err != nil {
 		go runTxnCallback(&txnCb{user: cb, err: err})
 		return
