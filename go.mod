@@ -1,4 +1,4 @@
-module github.com/isergeyam/badger/v4
+module github.com/NilFoundation/badger/v4
 
 go 1.19
 
