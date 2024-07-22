@@ -32,8 +32,8 @@ func OpenManaged(opts Options) (*DB, error) {
 // This is only useful for databases built on top of Badger (like Dgraph), and
 // can be ignored by most users.
 func (db *DB) NewTransactionAt(readTs uint64, update bool) *Txn {
-	if !db.opt.managedTxns {
-		panic("Cannot use NewTransactionAt with managedDB=false. Use NewTransaction instead.")
+	if !db.opt.managedTxns && update {
+		panic("Cannot use read-write NewTransactionAt with managedDB=false. Use NewTransaction instead.")
 	}
 	txn := db.newTransaction(update, true)
 	txn.readTs = readTs
@@ -52,6 +52,7 @@ func (db *DB) NewWriteBatchAt(commitTs uint64) *WriteBatch {
 	wb.txn.commitTs = commitTs
 	return wb
 }
+
 func (db *DB) NewManagedWriteBatch() *WriteBatch {
 	if !db.opt.managedTxns {
 		panic("cannot use NewManagedWriteBatch with managedDB=false. Use NewWriteBatch instead")
