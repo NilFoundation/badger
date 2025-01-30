@@ -18,7 +18,6 @@ package badger
 
 import (
 	"bytes"
-	"context"
 	"encoding/hex"
 	"fmt"
 	"math"
@@ -31,7 +30,6 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	otrace "go.opencensus.io/trace"
 
 	"github.com/dgraph-io/badger/v4/pb"
 	"github.com/dgraph-io/badger/v4/table"
@@ -322,14 +320,9 @@ func (s *levelsController) dropPrefixes(prefixes [][]byte) error {
 		if len(tableGroups) == 0 {
 			continue
 		}
-		_, span := otrace.StartSpan(context.Background(), "Badger.Compaction")
-		span.Annotatef(nil, "Compaction level: %v", l.level)
-		span.Annotatef(nil, "Drop Prefixes: %v", prefixes)
-		defer span.End()
 		opt.Infof("Dropping prefix at level %d (%d tableGroups)", l.level, len(tableGroups))
 		for _, operation := range tableGroups {
 			cd := compactDef{
-				span:         span,
 				thisLevel:    l,
 				nextLevel:    l,
 				top:          nil,
@@ -881,9 +874,6 @@ func (s *levelsController) compactBuildTables(
 	y.NumCompactionTablesAdd(s.kv.opt.MetricsEnabled, numTables)
 	defer y.NumCompactionTablesAdd(s.kv.opt.MetricsEnabled, -numTables)
 
-	cd.span.Annotatef(nil, "Top tables count: %v Bottom tables count: %v",
-		len(topTables), len(botTables))
-
 	keepTable := func(t *table.Table) bool {
 		for _, prefix := range cd.dropPrefixes {
 			if bytes.HasPrefix(t.Smallest(), prefix) &&
@@ -1035,8 +1025,6 @@ func containsAnyPrefixes(table *table.Table, listOfPrefixes [][]byte) bool {
 }
 
 type compactDef struct {
-	span *otrace.Span
-
 	compactorId int
 	t           targets
 	p           compactionPriority
@@ -1522,12 +1510,8 @@ func (s *levelsController) doCompact(id int, p compactionPriority) error {
 		p.t = s.levelTargets()
 	}
 
-	_, span := otrace.StartSpan(context.Background(), "Badger.Compaction")
-	defer span.End()
-
 	cd := compactDef{
 		compactorId:  id,
-		span:         span,
 		p:            p,
 		t:            p.t,
 		thisLevel:    s.levels[l],
@@ -1553,7 +1537,6 @@ func (s *levelsController) doCompact(id int, p compactionPriority) error {
 	}
 	defer s.cstatus.delete(cd) // Remove the ranges from compaction status.
 
-	span.Annotatef(nil, "Compaction: %+v", cd)
 	if err := s.runCompactDef(id, l, cd); err != nil {
 		// This compaction couldn't be done successfully.
 		s.kv.opt.Warningf("[Compactor: %d] LOG Compact FAILED with error: %+v: %+v", id, err, cd)
